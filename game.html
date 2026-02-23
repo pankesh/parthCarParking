@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D Parking Pro - Explosion Edition</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #050505; color: white;
+            overflow: hidden; height: 100vh;
+            display: flex; flex-direction: column;
+        }
+        #header {
+            background: rgba(20, 20, 20, 0.95);
+            padding: 15px; display: flex; justify-content: space-around;
+            border-bottom: 2px solid #3498db; z-index: 10;
+        }
+        .stat-label { font-size: 10px; opacity: 0.7; text-transform: uppercase; letter-spacing: 1px; }
+        .stat-value { font-size: 22px; font-weight: bold; color: #3498db; }
+        #gameArea { flex: 1; position: relative; }
+        #controls {
+            background: #0a0a0a; padding: 20px;
+            display: grid; grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(2, 60px); gap: 10px;
+            max-width: 400px; margin: 0 auto; width: 100%; z-index: 10;
+        }
+        .btn {
+            background: #222; border: 1px solid #444; border-radius: 10px;
+            color: white; font-size: 24px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            user-select: none;
+        }
+        .btn:active { background: #3498db; transform: scale(0.95); }
+        #up { grid-column: 2; }
+        #left { grid-column: 1; grid-row: 2; }
+        #down { grid-column: 2; grid-row: 2; }
+        #right { grid-column: 3; grid-row: 2; }
+        
+        #message {
+            position: absolute; bottom: 30px; left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95); color: #000; 
+            padding: 20px 40px; border-radius: 50px; 
+            text-align: center; display: none; z-index: 100;
+            box-shadow: 0 0 30px rgba(52, 152, 219, 0.6);
+            width: 90%; max-width: 500px;
+        }
+        #message.show { display: flex; flex-direction: column; align-items: center; animation: slideUp 0.4s ease; }
+        @keyframes slideUp { from { bottom: -100px; opacity: 0; } to { bottom: 30px; opacity: 1; } }
+        #nextBtn {
+            background: #3498db; color: white; border: none;
+            padding: 10px 30px; border-radius: 20px;
+            font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <div class="stat"><div class="stat-label">Level</div><div class="stat-value" id="level">1</div></div>
+        <div class="stat"><div class="stat-label">Moves</div><div class="stat-value" id="moves">0</div></div>
+    </div>
+
+    <div id="gameArea"></div>
+
+    <div id="message">
+        <h2 style="color:#3498db; font-size: 1.2rem;">✨ PERFECT PARKING!</h2>
+        <button id="nextBtn">Next Level</button>
+    </div>
+
+    <div id="controls">
+        <button class="btn" id="up">↑</button>
+        <button class="btn" id="left">←</button>
+        <button class="btn" id="down">↓</button>
+        <button class="btn" id="right">→</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, car, parkingSpot, obstacles = [];
+        let level = 1, moves = 0, isParked = false, moveInterval = null, rainbowHue = 0;
+        let explosionParticles = [], isExploding = false; // Particle system state
+        const MAP_SIZE = 40;
+
+        function init() {
+            const container = document.getElementById('gameArea');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050510); 
+
+            camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x222222, 1.2));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+            sun.position.set(10, 20, 10);
+            sun.castShadow = true;
+            scene.add(sun);
+
+            const floorMat = new THREE.MeshStandardMaterial({ 
+                color: 0x0a0a0a, metalness: 0.8, roughness: 0.05 
+            });
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            const grid = new THREE.GridHelper(MAP_SIZE, 10, 0x3498db, 0x222222);
+            grid.position.y = 0.02;
+            scene.add(grid);
+
+            setupLevel(level);
+            setupInput();
+            animate();
+        }
+
+        function createCar(x, z) {
+            const group = new THREE.Group();
+            const paint = new THREE.MeshStandardMaterial({
+                color: 0x3498db, metalness: 1.0, roughness: 0.05, emissive: 0x0a1a2e
+            });
+            
+            const body = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.7, 4.2), paint);
+            body.position.y = 0.6; body.castShadow = true; group.add(body);
+            
+            const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.6, 2.2), paint);
+            cabin.position.set(0, 1.2, -0.4); cabin.castShadow = true; group.add(cabin);
+
+            const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.4, 16);
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.5 });
+            const wheelPos = [[-1.1,0.4,1.3], [1.1,0.4,1.3], [-1.1,0.4,-1.3], [1.1,0.4,-1.3]];
+            wheelPos.forEach(p => {
+                const w = new THREE.Mesh(wheelGeo, wheelMat);
+                w.rotation.z = Math.PI/2;
+                w.position.set(p[0], p[1], p[2]);
+                group.add(w);
+            });
+
+            const headLight = new THREE.SphereGeometry(0.2, 8, 8);
+            const hlMat = new THREE.MeshStandardMaterial({ color: 0xffffaa, emissive: 0xffffaa });
+            const tlMat = new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000 });
+            
+            const hl1 = new THREE.Mesh(headLight, hlMat); hl1.position.set(0.7, 0.6, 2.1); group.add(hl1);
+            const hl2 = new THREE.Mesh(headLight, hlMat); hl2.position.set(-0.7, 0.6, 2.1); group.add(hl2);
+            const tl1 = new THREE.Mesh(headLight, tlMat); tl1.position.set(0.7, 0.6, -2.1); group.add(tl1);
+            const tl2 = new THREE.Mesh(headLight, tlMat); tl2.position.set(-0.7, 0.6, -2.1); group.add(tl2);
+
+            group.position.set(x, 0, z);
+            return group;
+        }
+
+        function createObstacle(x, z, type) {
+            let geometry, color;
+            if (type === 'cone') { geometry = new THREE.ConeGeometry(0.6, 1.5, 16); color = 0xff6600; }
+            else if (type === 'barrel') { geometry = new THREE.CylinderGeometry(0.6, 0.6, 1.8, 16); color = 0x2c3e50; }
+            else { geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5); color = 0x8e44ad; }
+            const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: color }));
+            mesh.position.set(x, 0.9, z); mesh.castShadow = true;
+            scene.add(mesh); obstacles.push(mesh);
+        }
+
+        function createExplosion(pos) {
+            isExploding = true;
+            car.visible = false;
+            stopMoving();
+
+            const count = 40;
+            const geo = new THREE.SphereGeometry(0.2, 8, 8); // Tiny balls
+            for (let i = 0; i < count; i++) {
+                const mat = new THREE.MeshStandardMaterial({ 
+                    color: Math.random() > 0.5 ? 0x3498db : 0xffaa00,
+                    emissive: 0x3498db, emissiveIntensity: 2
+                });
+                const p = new THREE.Mesh(geo, mat);
+                p.position.copy(pos);
+                p.position.y += 0.5;
+                p.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.6,
+                    Math.random() * 0.6,
+                    (Math.random() - 0.5) * 0.6
+                );
+                p.life = 1.0;
+                scene.add(p);
+                explosionParticles.push(p);
+            }
+
+            setTimeout(() => {
+                setupLevel(level); // Reset level after explosion
+            }, 1500);
+        }
+
+        function updateExplosion() {
+            for (let i = explosionParticles.length - 1; i >= 0; i--) {
+                const p = explosionParticles[i];
+                p.position.add(p.velocity);
+                p.velocity.y -= 0.02; // Gravity
+                p.life -= 0.02;
+                p.scale.multiplyScalar(0.96);
+                if (p.life <= 0) {
+                    scene.remove(p);
+                    explosionParticles.splice(i, 1);
+                }
+            }
+        }
+
+        function setupLevel(lvl) {
+            isParked = false; isExploding = false; moves = 0;
+            document.getElementById('level').textContent = lvl;
+            document.getElementById('moves').textContent = 0;
+            document.getElementById('message').classList.remove('show');
+            if (car) scene.remove(car);
+            if (parkingSpot) scene.remove(parkingSpot);
+            obstacles.forEach(o => scene.remove(o));
+            obstacles = [];
+            explosionParticles.forEach(p => scene.remove(p));
+            explosionParticles = [];
+
+            car = createCar(-14, -14);
+            scene.add(car);
+
+            parkingSpot = new THREE.Mesh(
+                new THREE.BoxGeometry(5, 0.1, 7),
+                new THREE.MeshStandardMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 })
+            );
+            parkingSpot.position.set(14, 0.05, 14);
+            scene.add(parkingSpot);
+
+            if (lvl === 1) {
+                createObstacle(0, 0, 'box'); createObstacle(5, -5, 'cone'); createObstacle(-5, 8, 'barrel');
+            } else {
+                for(let i=0; i < (lvl + 4); i++) {
+                    createObstacle(Math.random()*24 - 12, Math.random()*24 - 12, i%3 === 0 ? 'cone' : 'barrel');
+                }
+            }
+        }
+
+        function handleMove(dir) {
+            if (isParked || isExploding) return;
+            const prev = car.position.clone();
+            const speed = 0.22, rot = 0.07;
+            if (dir === 'f') { car.position.x += Math.sin(car.rotation.y) * speed; car.position.z += Math.cos(car.rotation.y) * speed; }
+            else if (dir === 'b') { car.position.x -= Math.sin(car.rotation.y) * speed; car.position.z -= Math.cos(car.rotation.y) * speed; }
+            else if (dir === 'l') car.rotation.y += rot;
+            else if (dir === 'r') car.rotation.y -= rot;
+
+            if (Math.abs(car.position.x) > (MAP_SIZE/2 - 1.5) || Math.abs(car.position.z) > (MAP_SIZE/2 - 1.5)) car.position.copy(prev);
+            
+            // Check Collision with Obstacles
+            obstacles.forEach(o => { 
+                if (car.position.distanceTo(o.position) < 2.3) {
+                    createExplosion(car.position.clone());
+                } 
+            });
+
+            if (!isExploding) {
+                moves++;
+                document.getElementById('moves').textContent = moves;
+                if (car.position.distanceTo(parkingSpot.position) < 2.8) { 
+                    isParked = true; 
+                    document.getElementById('message').classList.add('show'); 
+                }
+            }
+        }
+
+        function stopMoving() { clearInterval(moveInterval); moveInterval = null; }
+
+        function setupInput() {
+            const btns = { up: 'f', down: 'b', left: 'l', right: 'r' };
+            Object.keys(btns).forEach(id => {
+                const b = document.getElementById(id);
+                b.onpointerdown = (e) => { e.preventDefault(); if (!moveInterval) moveInterval = setInterval(() => handleMove(btns[id]), 40); };
+            });
+            window.onpointerup = () => stopMoving();
+            window.onkeydown = (e) => {
+                const k = e.code;
+                if (k === 'ArrowUp' || k === 'KeyW') handleMove('f');
+                else if (k === 'ArrowDown' || k === 'KeyS') handleMove('b');
+                else if (k === 'ArrowLeft' || k === 'KeyA') handleMove('l');
+                else if (k === 'ArrowRight' || k === 'KeyD') handleMove('r');
+                else if (isParked && k === 'Space') { level++; setupLevel(level); }
+            };
+            document.getElementById('nextBtn').onclick = () => { level++; setupLevel(level); };
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (car && !isExploding) {
+                const cX = car.position.x - Math.sin(car.rotation.y) * 16;
+                const cZ = car.position.z - Math.cos(car.rotation.y) * 16;
+                camera.position.set(cX, 11, cZ);
+                camera.lookAt(car.position);
+            }
+            if (isParked) {
+                rainbowHue += 0.02;
+                parkingSpot.material.color.setHSL(rainbowHue % 1, 0.8, 0.5);
+            }
+            if (isExploding) updateExplosion();
+            renderer.render(scene, camera);
+        }
+        window.onload = init;
+    </script>
+</body>
+</html>
